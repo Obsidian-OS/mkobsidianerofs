@@ -185,7 +185,7 @@ cp "$1" "$BUILD_DIR/etc/config.mkobsfs" || true
 echo ">>> Enabling Pillar signature file."
 echo "$PILLAR_MIRROR" >"$BUILD_DIR/etc/is-pillar"
 arch-chroot "$BUILD_DIR" bash -c "mv /bin/pacman /lib/" #neo: get rid of pacman from /usr/bin
-arch-chroot "$BUILD_DIR" bash -c "echo \"echo '[pillar] DONT run pacman on this system unless you are bootstrapping something. To run anyway, run /usr/lib/pacman.' > /bin/pacman && chmod +x /bin/pacman\""
+arch-chroot "$BUILD_DIR" bash -c "echo \"echo '[pillar] DONT run pacman on this system unless you are bootstrapping something. To run anyway, run /usr/lib/pacman.'\" > /bin/pacman && chmod +x /bin/pacman"
 echo ">>> Creating the EROFS image ($OUTPUT_EROFS)..."
 if ! mkfs.erofs -zlz4hc "$OUTPUT_EROFS" "$BUILD_DIR"; then
   echo "Error: mkfs.erofs failed to create the image."
