@@ -19,17 +19,18 @@ fi
 check_command git
 
 BUILD_DIR="obsidian_rootfs"
-PACKAGES="base linux linux-firmware networkmanager sudo vim nano efibootmgr python squashfs-tools arch-install-scripts base-devel git gptfdisk f2fs-tools grub gpm wget os-prober pv sbctl mesa vulkan-intel vulkan-radeon vulkan-nouveau libva-mesa-driver xorg-xwayland wayland wayland-protocols  plasma-meta sddm sddm-kcm discover konsole dolphin firefox ark plugind obsidianos-kcm plugind obsidianos-branding flatpak distrobox obsidianctl"
+PACKAGES="base linux linux-firmware networkmanager sudo vim nano efibootmgr python squashfs-tools arch-install-scripts base-devel git gptfdisk f2fs-tools grub gpm wget os-prober pv sbctl mesa vulkan-intel vulkan-radeon vulkan-nouveau libva-mesa-driver xorg-xwayland wayland wayland-protocols  plasma-meta sddm sddm-kcm discover konsole dolphin ark obsidianos-kcm plugind obsidianos-branding flatpak distrobox obsidianctl fuse fuse2 gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav bluez bluez-utils spectacle pipewire wireplumber pipewire-pulse alsa-utils pipewire-alsa noto-fonts noto-fonts-cjk power-profiles-daemon udisks2 xdg-user-dirs xdg-utils erofs-utils polkit-kde-agent dosfstools openssh man-db"
 OUTPUT_EROFS="erofs.rootfs"
 TIMEZONE=""
 NETUPDATE=""
 HOSTNAME="projectpillar"
 SERVICES="NetworkManager gpm plugind sddm"
+USER_SERVICES="pipewire pipewire-pulse wireplumber"
 ROOT_HAVEPASSWORD=""
 CUSTOM_SCRIPTS_DIR=""
 ADMIN_USER="user"
 ADMIN_DOTFILES=""
-ADMIN_PASSWORD=""
+ADMIN_PASSWORD="user"
 ADMIN_DOTFILES_TYPE=""
 POST_INSTALL=""
 PILLAR_MIRROR="https://files.obsidianos.xyz/pillar" # please do not change unless you're building your own image
@@ -159,7 +160,6 @@ if [[ -n "$HOSTNAME" ]]; then
   echo "Setting hostname to $HOSTNAME..."
   echo "$HOSTNAME" >"$BUILD_DIR/etc/hostname"
 fi
-
 echo ">>> Enabling services to start on boot..."
 arch-chroot "$BUILD_DIR" systemctl enable $SERVICES
 if [[ -n "$CUSTOM_SCRIPTS_DIR" ]]; then
@@ -172,7 +172,8 @@ if [[ -n "$CUSTOM_SCRIPTS_DIR" ]]; then
   echo ">>> Cleaning up custom scripts from chroot..."
   rm -rf "$BUILD_DIR/$SCRIPT_TEMP_DIR"
 fi
-
+echo ">>> Enabling user services to start on boot..."
+arch-chroot "$BUILD_DIR" bash -c "systemctl enable --global $USER_SERVICES"
 if [[ -z "$ROOT_HAVEPASSWORD" ]]; then
   echo ">>> Please set the password for the root user"
   arch-chroot "$BUILD_DIR" passwd root
@@ -184,6 +185,36 @@ echo ">>> Copying a backup of the system image configuration to /etc/config.mkob
 cp "$1" "$BUILD_DIR/etc/config.mkobsfs" || true
 echo ">>> Enabling Pillar signature file."
 echo "$PILLAR_MIRROR" >"$BUILD_DIR/etc/is-pillar"
+cat > "$BUILD_DIR/etc/os-release" <<'EOF'
+NAME="ObsidianOS"
+PRETTY_NAME="Obsidian GNU/Linux"
+ID=obsidian
+BUILD_ID=pillar
+ANSI_COLOR="38;2;138;43;226"
+HOME_URL="https://obsidianos.xyz"
+DOCUMENTATION_URL="https://wiki.obsidianos.xyz"
+SUPPORT_URL="https://github.com/orgs/Obsidian-OS/discussions"
+BUG_REPORT_URL="https://github.com/orgs/Obsidian-OS/discussions"
+PRIVACY_POLICY_URL="https://terms.archlinux.org/docs/privacy-policy/"
+LOGO=obsidianos
+EOF
+cat > "$BUILD_DIR/etc/issue" <<'EOF'
+------.
++++++++. -
++++++++.   +
++++++++  .   -
+-     .    +   .          ###.   #           #      #  #                ####    ###.
+ +        . -          +.    #  #.#.   +#.  -   +# #  -  .##   - ##   #    #  #
+   -    .   + .  .     #     #  #   # #     #  #   #  #     #  #   # -+    #.  ###
+     .    -   -    -   #     #  #   #    #+ #  #   #  # .#  #  #   #  #    #      #
+            +-+++++#    .####   ####  -###  #  .####  #  ##### #   #   ####   ####+
+             +++++##
+          -  +++++##
+            ++++++#
+
+
+This is \n (\s \m \r) \t
+EOF
 arch-chroot "$BUILD_DIR" bash -c "mv /bin/pacman /lib/" #neo: get rid of pacman from /usr/bin
 arch-chroot "$BUILD_DIR" bash -c "echo \"echo '[pillar] DONT run pacman on this system unless you are bootstrapping something. To run anyway, run /usr/lib/pacman.'\" > /bin/pacman && chmod +x /bin/pacman"
 echo ">>> Creating the EROFS image ($OUTPUT_EROFS)..."
