@@ -1,0 +1,199 @@
+#!/bin/bash
+set -e
+
+check_command() {
+  local cmd="$1"
+  local extra_msg="$2"
+  if ! command -v "$cmd" &>/dev/null; then
+    echo "Error: Required command '$cmd' not found. Please install it."
+    [[ -n "$extra_msg" ]] && echo "$extra_msg"
+    exit 1
+  fi
+}
+
+if [[ $EUID -ne 0 ]]; then
+  echo "This script must be run as root."
+  exit 1
+fi
+
+check_command git
+
+BUILD_DIR="obsidian_rootfs"
+PACKAGES="base linux linux-firmware networkmanager sudo vim nano efibootmgr python squashfs-tools arch-install-scripts base-devel git gptfdisk f2fs-tools grub gpm wget os-prober pv sbctl mesa vulkan-intel vulkan-radeon vulkan-nouveau libva-mesa-driver xorg-xwayland wayland wayland-protocols  plasma-meta sddm sddm-kcm discover konsole dolphin firefox ark plugind obsidianos-kcm plugind obsidianos-branding flatpak distrobox obsidianctl"
+OUTPUT_EROFS="erofs.rootfs"
+TIMEZONE=""
+NETUPDATE=""
+HOSTNAME="projectpillar"
+SERVICES="NetworkManager gpm plugind sddm"
+ROOT_HAVEPASSWORD=""
+CUSTOM_SCRIPTS_DIR=""
+ADMIN_USER="user"
+ADMIN_DOTFILES=""
+ADMIN_PASSWORD=""
+ADMIN_DOTFILES_TYPE=""
+POST_INSTALL=""
+PILLAR_MIRROR="https://files.obsidianos.xyz/pillar" # please do not change unless you're building your own image
+if [[ "$1" != "" ]]; then
+  source "$1"
+  echo ">>> Custom config file specified: $1"
+fi
+
+if [[ "$2" != "" ]]; then
+  OUTPUT_EROFS="$2"
+  echo ">>> Custom EROFS output: $2"
+fi
+
+if [[ -n "$oosnopass" ]]; then
+  ROOT_HAVEPASSWORD="yesssssss"
+  echo ">>> No password enabled via env var."
+fi
+
+check_command mkfs.erofs "mkfs.erofs is prodvided by erofs-utils on Arch Linux"
+check_command pacstrap "pacstrap is part of the arch-install-scripts package on Arch Linux."
+check_command arch-chroot "arch-chroot is part of the arch-install-scripts package on Arch Linux."
+
+echo ">>> Cleaning up any previous build directories..."
+rm -rf "$BUILD_DIR"
+rm -f "$OUTPUT_EROFS"
+mkdir -p "$BUILD_DIR"
+echo ">>> Creating ObsidianOS Atomic pacman configuration..."
+PACMAN_CONF=$(mktemp)
+PILLAR_MIRRORLIST=$(mktemp)
+ARCH_MIRRORLIST=$(mktemp)
+
+echo "Server = ${PILLAR_MIRROR}" >"$PILLAR_MIRRORLIST"
+echo "Server = https://mirror.rackspace.com/archlinux/\$repo/os/\$arch" >"$ARCH_MIRRORLIST"
+
+cat >"$PACMAN_CONF" <<EOF
+[options]
+HoldPkg     = pacman glibc
+Architecture = x86_64
+CheckSpace
+SigLevel    = Never
+LocalFileSigLevel = Optional
+
+[repo]
+Server = ${PILLAR_MIRROR}
+
+[core]
+Server = https://mirror.rackspace.com/archlinux/\$repo/os/\$arch
+
+[extra]
+Server = https://mirror.rackspace.com/archlinux/\$repo/os/\$arch
+
+[multilib]
+Server = https://mirror.rackspace.com/archlinux/\$repo/os/\$arch
+EOF
+
+echo ">>> Bootstrapping ObsidianOS Atomic base system with pacstrap..."
+echo ">>> This may take some time, depending on your internet connection."
+PACKAGES=$(echo $PACKAGES | tr ' ' '\n')
+pacman -Sy --config "$PACMAN_CONF"
+PACKAGES=$(echo $PACKAGES) # weird ass hack to remove extra spaces lmfao
+if ! pacstrap -C "$PACMAN_CONF" -M -c -K "$BUILD_DIR" $PACKAGES --overwrite '*'; then
+  echo "Error: pacstrap failed to install the base system."
+  rm -f "$PACMAN_CONF" "$PILLAR_MIRRORLIST" "$ARCH_MIRRORLIST"
+  exit 1
+fi
+
+mkdir -p "$BUILD_DIR/etc/pacman.d"
+cp "$PILLAR_MIRRORLIST" "$BUILD_DIR/etc/pacman.d/pillar-mirrorlist"
+cp "$ARCH_MIRRORLIST" "$BUILD_DIR/etc/pacman.d/mirrorlist"
+cat >"$BUILD_DIR/etc/pacman.conf" <<EOF
+[options]
+HoldPkg     = pacman glibc
+Architecture = x86_64
+CheckSpace
+SigLevel    = Required DatabaseOptional
+LocalFileSigLevel = Optional
+
+[repo]
+Include = /etc/pacman.d/pillar-mirrorlist
+
+[core]
+Include = /etc/pacman.d/mirrorlist
+
+[extra]
+Include = /etc/pacman.d/mirrorlist
+
+[multilib]
+Include = /etc/pacman.d/mirrorlist
+EOF
+
+rm -f "$PACMAN_CONF" "$PILLAR_MIRRORLIST" "$ARCH_MIRRORLIST"
+if [[ -n "$ADMIN_USER" ]]; then
+  echo "Creating user $ADMIN_USER..."
+  arch-chroot "$BUILD_DIR" useradd -m -G wheel -s /bin/bash "$ADMIN_USER"
+
+  if [[ -n "$ADMIN_DOTFILES_TYPE" ]]; then
+    if [[ "$ADMIN_DOTFILES_TYPE" == "HOME" ]]; then
+      arch-chroot "$BUILD_DIR" su - "$ADMIN_USER" -c "git clone '$ADMIN_DOTFILES' ~/dotfiles && cp -r ~/dotfiles/.??* ~/ && rm -rf ~/.git"
+    elif [[ "$ADMIN_DOTFILES_TYPE" == "CONFIG" ]]; then
+      arch-chroot "$BUILD_DIR" su - "$ADMIN_USER" -c "git clone '$ADMIN_DOTFILES' ~/.config"
+    else
+      cp -r /home/"$ADMIN_DOTFILES_TYPE"/.??* "$BUILD_DIR/home/$ADMIN_USER/"
+    fi
+    if [[ -n "$POST_INSTALL" ]]; then
+      arch-chroot "$BUILD_DIR" su - "$ADMIN_USER" -c "$POST_INSTALL"
+    fi
+    arch-chroot "$BUILD_DIR" su - "$ADMIN_USER" -c "flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
+  fi
+
+  arch-chroot "$BUILD_DIR" sh -c "echo '%wheel ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers"
+  arch-chroot "$BUILD_DIR" visudo -c
+  echo ">>> Please set the password for $ADMIN_USER"
+  if [[ -n "$ADMIN_PASSWORD" ]]; then
+    arch-chroot "$BUILD_DIR" bash -c "echo '${ADMIN_USER}:${ADMIN_PASSWORD}' | chpasswd"
+    echo ">>> Password defined in config. skipping..."
+  else
+    arch-chroot "$BUILD_DIR" passwd "$ADMIN_USER"
+  fi
+fi
+
+if [[ -n "$TIMEZONE" ]]; then
+  echo "Setting timezone to $TIMEZONE..."
+  arch-chroot "$BUILD_DIR" ln -sf "/usr/share/zoneinfo/$TIMEZONE" "/etc/localtime"
+fi
+
+if [[ -n "$HOSTNAME" ]]; then
+  echo "Setting hostname to $HOSTNAME..."
+  echo "$HOSTNAME" >"$BUILD_DIR/etc/hostname"
+fi
+
+echo ">>> Enabling services to start on boot..."
+arch-chroot "$BUILD_DIR" systemctl enable $SERVICES
+if [[ -n "$CUSTOM_SCRIPTS_DIR" ]]; then
+  echo ">>> Copying custom scripts to chroot..."
+  SCRIPT_TEMP_DIR="/root/custom_scripts"
+  mkdir -p "$BUILD_DIR/$SCRIPT_TEMP_DIR"
+  cp -r "$CUSTOM_SCRIPTS_DIR"/* "$BUILD_DIR/$SCRIPT_TEMP_DIR/"
+  echo ">>> Making custom scripts executable and running main.sh..."
+  arch-chroot "$BUILD_DIR" bash -c "chmod +x $SCRIPT_TEMP_DIR/* && $SCRIPT_TEMP_DIR/main.sh"
+  echo ">>> Cleaning up custom scripts from chroot..."
+  rm -rf "$BUILD_DIR/$SCRIPT_TEMP_DIR"
+fi
+
+if [[ -z "$ROOT_HAVEPASSWORD" ]]; then
+  echo ">>> Please set the password for the root user"
+  arch-chroot "$BUILD_DIR" passwd root
+else
+  arch-chroot "$BUILD_DIR" passwd -d root
+fi
+
+echo ">>> Copying a backup of the system image configuration to /etc/config.mkobsfs"
+cp "$1" "$BUILD_DIR/etc/config.mkobsfs" || true
+echo ">>> Enabling Pillar signature file."
+echo "$PILLAR_MIRROR" >"$BUILD_DIR/etc/is-pillar"
+arch-chroot "$BUILD_DIR" bash -c "pacman -Rns pacman" #neo: get rid of pacman
+echo ">>> Creating the EROFS image ($OUTPUT_EROFS)..."
+if ! mkfs.erofs -zlz4hc "$OUTPUT_EROFS" "$BUILD_DIR"; then
+  echo "Error: mkfs.erofs failed to create the image."
+  exit 1
+fi
+
+echo ">>> Cleaning up the build directory..."
+umount "$BUILD_DIR" || echo ">>> Not mounted. proceeding..."
+rm -rf "$BUILD_DIR"
+echo "---"
+echo ">>> Success! ObsidianOS Atomic system image created at: $(pwd)/$OUTPUT_EROFS"
+echo ">>> Packages included: $PACKAGES"
